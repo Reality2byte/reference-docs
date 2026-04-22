@@ -45,7 +45,7 @@ type MarkdownWriter struct {
 	resourceWeight  int
 	categoryWeight  int
 
-	// linkMap is populated during render for the PR 2 cross-reference pass.
+	// linkMap maps kind name → page path for cross-reference resolution.
 	linkMap map[string]linkInfo
 
 	toc []*mdTOCItem
@@ -70,6 +70,7 @@ type linkInfo struct {
 	Category string
 	Filename string
 	Anchor   string
+	Version  api.ApiVersion // used to pick the highest version on name collisions
 }
 
 // resourcePage is the view model resource.tmpl consumes.
@@ -88,6 +89,7 @@ type resourcePage struct {
 type templateField struct {
 	Name          string
 	Type          string
+	TypeHref      string // relative path#anchor, empty for primitives and unknowns
 	Description   string
 	Required      bool
 	ConstValue    string // non-empty for fields with a fixed value (apiVersion, kind)
@@ -109,12 +111,14 @@ type templateOperation struct {
 type templateParam struct {
 	Name        string
 	Type        string
+	TypeHref    string // relative path#anchor when Type is a known definition
 	Description string
 }
 
 type templateResponse struct {
 	Code        string
 	Type        string
+	TypeHref    string // relative path#anchor when Type is a known definition
 	Description string
 }
 
@@ -138,23 +142,31 @@ var anchorRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 //go:embed templates/resource.tmpl
 var resourceTemplateSrc string
 
-// q quotes for YAML frontmatter; md escapes `<` for body text.
-// Descriptions are passed raw so the template picks the right escape per site.
+// q quotes for YAML frontmatter; md escapes `<` for body text; hugoRef
+// wraps a relative path in a {{< ref >}} shortcode.
 var resourceTemplate = template.Must(template.New("resource").Funcs(template.FuncMap{
-	"q":  strconv.Quote,
-	"md": escape,
+	"q":       strconv.Quote,
+	"md":      escape,
+	"hugoRef": hugoRef,
 }).Parse(resourceTemplateSrc))
+
+// hugoRef wraps a path in a {{< ref >}} shortcode resolved by Hugo at build time.
+func hugoRef(path string) string {
+	return `{{< ref "` + path + `" >}}`
+}
 
 func NewMarkdownWriter(config *api.Config, copyright, title string) DocWriter {
 	outputDir := filepath.Join(api.BuildDir, "markdown")
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "MarkdownWriter: failed to create output dir %s: %v\n", outputDir, err)
 	}
-	return &MarkdownWriter{
+	m := &MarkdownWriter{
 		Config:    config,
 		OutputDir: outputDir,
 		linkMap:   make(map[string]linkInfo),
 	}
+	m.buildLinkMap(config)
+	return m
 }
 
 func (m *MarkdownWriter) Extension() string {
@@ -261,7 +273,7 @@ func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 	}
 	defer f.Close()
 
-	if err := resourceTemplate.Execute(f, m.buildResourcePage(r)); err != nil {
+	if err := resourceTemplate.Execute(f, m.buildResourcePage(r, m.currentCategory.slug)); err != nil {
 		return fmt.Errorf("markdown: resource %s body: %w", r.Name, err)
 	}
 
@@ -297,7 +309,7 @@ func (m *MarkdownWriter) WriteDefinition(d *api.Definition) error {
 	}
 	defer f.Close()
 
-	if err := resourceTemplate.Execute(f, m.buildDefinitionPage(d)); err != nil {
+	if err := resourceTemplate.Execute(f, m.buildDefinitionPage(d, "definitions")); err != nil {
 		return fmt.Errorf("markdown: definition %s body: %w", d.Name, err)
 	}
 	return nil
@@ -332,7 +344,7 @@ func (m *MarkdownWriter) WriteOperation(o *api.Operation) error {
 	defer f.Close()
 
 	writeSectionFrontmatter(f, o.Type.Name, o.Description(), m.nextResourceWeight())
-	if err := resourceTemplate.ExecuteTemplate(f, "operation", buildTemplateOperation(o)); err != nil {
+	if err := resourceTemplate.ExecuteTemplate(f, "operation", m.buildTemplateOperation(o, "operations")); err != nil {
 		return fmt.Errorf("markdown: operation %s body: %w", o.ID, err)
 	}
 	return nil
@@ -387,12 +399,14 @@ func (m *MarkdownWriter) Finalize() error {
 	return nil
 }
 
-// buildResourcePage = buildDefinitionPage + operations.
-func (m *MarkdownWriter) buildResourcePage(r *api.Resource) resourcePage {
-	page := m.buildDefinitionPage(r.Definition)
+// buildResourcePage = buildDefinitionPage + operations. currentCategory
+// is the slug of the category this resource lands in; cross-type links
+// are resolved relative to it.
+func (m *MarkdownWriter) buildResourcePage(r *api.Resource, currentCategory string) resourcePage {
+	page := m.buildDefinitionPage(r.Definition, currentCategory)
 	for _, oc := range r.Definition.OperationCategories {
 		for _, o := range oc.Operations {
-			page.Operations = append(page.Operations, buildTemplateOperation(o))
+			page.Operations = append(page.Operations, m.buildTemplateOperation(o, currentCategory))
 		}
 	}
 	return page
@@ -400,7 +414,7 @@ func (m *MarkdownWriter) buildResourcePage(r *api.Resource) resourcePage {
 
 // buildDefinitionPage is shared by resource pages (which then add
 // operations) and standalone definition pages (which don't).
-func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition) resourcePage {
+func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition, currentCategory string) resourcePage {
 	page := resourcePage{
 		APIVersion:  groupVersionString(d.GroupFullName, d.Version),
 		Kind:        d.Name,
@@ -420,6 +434,7 @@ func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition) resourcePage {
 		page.Fields = append(page.Fields, templateField{
 			Name:          fld.Name,
 			Type:          fld.Type,
+			TypeHref:      m.resolveType(fld.Type, currentCategory),
 			Description:   fld.Description,
 			Required:      required[fld.Name],
 			ConstValue:    constValueFor(fld.Name, page.APIVersion, page.Kind),
@@ -431,7 +446,7 @@ func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition) resourcePage {
 	return page
 }
 
-func buildTemplateOperation(o *api.Operation) templateOperation {
+func (m *MarkdownWriter) buildTemplateOperation(o *api.Operation, currentCategory string) templateOperation {
 	op := templateOperation{
 		Verb:   strings.ToLower(o.HttpMethod),
 		Title:  o.Type.Name,
@@ -445,6 +460,7 @@ func buildTemplateOperation(o *api.Operation) templateOperation {
 			out = append(out, templateParam{
 				Name:        p.Name,
 				Type:        p.Type,
+				TypeHref:    m.resolveType(p.Type, currentCategory),
 				Description: p.Description,
 			})
 		}
@@ -462,11 +478,84 @@ func buildTemplateOperation(o *api.Operation) templateOperation {
 		op.Responses = append(op.Responses, templateResponse{
 			Code:        rsp.Code,
 			Type:        rsp.Field.Type,
+			TypeHref:    m.resolveType(rsp.Field.Type, currentCategory),
 			Description: rsp.Field.Description,
 		})
 	}
 
 	return op
+}
+
+// On collisions: resource entries beat definition entries; higher version wins.
+func (m *MarkdownWriter) buildLinkMap(config *api.Config) {
+	m.linkResources(config.ResourceCategories)
+	m.linkDefinitions(config.Definitions.All)
+}
+
+func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
+	for _, c := range categories {
+		slug := kebabCase(c.Name)
+		for _, r := range c.Resources {
+			if r.Definition == nil {
+				continue
+			}
+			filename := strings.ToLower(r.Name) + "-" + string(r.Definition.Version)
+			m.recordLink(r.Definition.Name, slug, filename, r.Definition.Version)
+		}
+	}
+}
+
+func (m *MarkdownWriter) linkDefinitions(all map[string]*api.Definition) {
+	for _, d := range all {
+		if d.InToc || d.IsInlined || d.IsOldVersion {
+			continue
+		}
+		filename := strings.ToLower(d.Name) + "-" + string(d.Version)
+		if d.Group != "" && d.Group != "core" {
+			filename += "-" + string(d.Group)
+		}
+		m.recordLink(d.Name, "definitions", filename, d.Version)
+	}
+}
+
+func (m *MarkdownWriter) recordLink(name, category, filename string, version api.ApiVersion) {
+	if existing, ok := m.linkMap[name]; ok {
+		if existing.Category != "definitions" && category == "definitions" {
+			return
+		}
+		// LessThan returns true when the receiver is the higher version.
+		if existing.Category == category && existing.Version.LessThan(version) {
+			return
+		}
+	}
+	m.linkMap[name] = linkInfo{
+		Category: category,
+		Filename: filename,
+		Anchor:   anchor(name),
+		Version:  version,
+	}
+}
+
+// resolveType returns a relative path#anchor for typeName, or "" if unknown.
+// currentCategory is the slug containing the calling page; "MutatingWebhook
+// array" is normalised to "MutatingWebhook" before lookup.
+func (m *MarkdownWriter) resolveType(typeName, currentCategory string) string {
+	info, ok := m.linkMap[typeName]
+	if !ok {
+		if bare, stripped := strings.CutSuffix(typeName, " array"); stripped {
+			info, ok = m.linkMap[bare]
+		}
+	}
+	if !ok {
+		return ""
+	}
+	var path string
+	if info.Category == currentCategory {
+		path = info.Filename
+	} else {
+		path = "../" + info.Category + "/" + info.Filename
+	}
+	return path + "#" + info.Anchor
 }
 
 // writeSection falls back to a `# Title` stub when

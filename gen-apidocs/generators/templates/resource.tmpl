@@ -38,7 +38,7 @@ guide. You can file document formatting bugs against the
   <tbody>
 {{- range .Fields}}
     <tr>
-      <td><code>{{.Name}}</code>{{if .Required}}&nbsp;<strong>*</strong>{{end}}<br/><em>{{.Type}}</em>{{if .ConstValue}}<br/><em>const: <code>{{.ConstValue}}</code></em>{{end}}{{if .PatchStrategy}}<br/><em>patch strategy: {{.PatchStrategy}}{{if .PatchMergeKey}} on key <code>{{.PatchMergeKey}}</code>{{end}}</em>{{end}}</td>
+      <td><code>{{.Name}}</code>{{if .Required}}&nbsp;<strong>*</strong>{{end}}<br/><em>{{template "typeWrap" .}}</em>{{if .ConstValue}}<br/><em>const: <code>{{.ConstValue}}</code></em>{{end}}{{if .PatchStrategy}}<br/><em>patch strategy: {{.PatchStrategy}}{{if .PatchMergeKey}} on key <code>{{.PatchMergeKey}}</code>{{end}}</em>{{end}}</td>
       <td>{{.Description | md}}</td>
     </tr>
 {{- end}}
@@ -86,12 +86,16 @@ guide. You can file document formatting bugs against the
     <tr>
       <td>{{.Code}}</td>
       <td>{{.Description | md}}</td>
-      <td>{{if .Type}}<em>{{.Type}}</em>{{else}}&mdash;{{end}}</td>
+      <td>{{if .Type}}<em>{{template "typeWrap" .}}</em>{{else}}&mdash;{{end}}</td>
     </tr>
 {{- end}}
   </tbody>
 </table>
 {{end}}
+{{- end}}
+
+{{define "typeWrap" -}}
+{{if .TypeHref}}<a href="{{hugoRef .TypeHref}}">{{.Type}}</a>{{else}}{{.Type}}{{end}}
 {{- end}}
 
 {{define "paramTable" -}}
@@ -101,7 +105,7 @@ guide. You can file document formatting bugs against the
 {{- range .}}
     <tr>
       <td><code>{{.Name}}</code></td>
-      <td><em>{{.Type}}</em></td>
+      <td><em>{{template "typeWrap" .}}</em></td>
       <td>{{.Description | md}}</td>
     </tr>
 {{- end}}
