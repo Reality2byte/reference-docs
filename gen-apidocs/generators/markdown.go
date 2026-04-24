@@ -264,8 +264,16 @@ func (m *MarkdownWriter) WriteResourceCategory(name, file string) error {
 }
 
 func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
+	slug := m.currentCategory.slug
+	if r.Definition != nil && r.Definition.IsOldVersion {
+		slug = kebabCase(string(r.Definition.Group))
+		if err := os.MkdirAll(filepath.Join(m.OutputDir, slug), 0755); err != nil {
+			return fmt.Errorf("markdown: group dir %s: %w", slug, err)
+		}
+	}
+
 	filename := fmt.Sprintf("%s-%s.md", strings.ToLower(r.Name), r.Definition.Version)
-	path := filepath.Join(m.OutputDir, m.currentCategory.slug, filename)
+	path := filepath.Join(m.OutputDir, slug, filename)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -273,7 +281,7 @@ func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 	}
 	defer f.Close()
 
-	if err := resourceTemplate.Execute(f, m.buildResourcePage(r, m.currentCategory.slug)); err != nil {
+	if err := resourceTemplate.Execute(f, m.buildResourcePage(r, slug)); err != nil {
 		return fmt.Errorf("markdown: resource %s body: %w", r.Name, err)
 	}
 
