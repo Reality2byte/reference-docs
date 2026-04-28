@@ -11,6 +11,7 @@ auto_generated: true
 
 GET /api/v1/namespaces/{namespace}/pods
 
+
 #### Path Parameters
 
 <table>
@@ -23,6 +24,8 @@ GET /api/v1/namespaces/{namespace}/pods
     </tr>
   </tbody>
 </table>
+
+
 #### Query Parameters
 
 <table>
@@ -35,3 +38,6 @@ GET /api/v1/namespaces/{namespace}/pods
     </tr>
   </tbody>
 </table>
+
+
+

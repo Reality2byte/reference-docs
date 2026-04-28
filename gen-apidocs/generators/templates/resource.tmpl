@@ -27,7 +27,8 @@ guide. You can file document formatting bugs against the
 {{if .Import}}
 `import "{{.Import}}"`
 {{end}}
-## {{.Kind}} {#{{.Anchor}}}
+{{range .Sections}}
+## {{.Title}} {#{{.Anchor}}}
 
 {{.Description | md}}
 
@@ -44,6 +45,7 @@ guide. You can file document formatting bugs against the
 {{- end}}
   </tbody>
 </table>
+{{end}}
 {{end}}
 {{if .Operations}}
 ## Operations {#Operations}
@@ -62,22 +64,23 @@ guide. You can file document formatting bugs against the
 
 {{.Method}} {{.Path}}
 
-{{if .PathParams}}#### Path Parameters
+{{if .PathParams}}
+#### Path Parameters
 
 {{template "paramTable" .PathParams}}
 {{end}}
-
-{{- if .QueryParams}}#### Query Parameters
+{{if .QueryParams}}
+#### Query Parameters
 
 {{template "paramTable" .QueryParams}}
 {{end}}
-
-{{- if .BodyParams}}#### Body Parameters
+{{if .BodyParams}}
+#### Body Parameters
 
 {{template "paramTable" .BodyParams}}
 {{end}}
-
-{{- if .Responses}}#### Response
+{{if .Responses}}
+#### Response
 
 <table>
   <thead><tr><th>Status</th><th>Description</th><th>Response</th></tr></thead>
@@ -92,7 +95,7 @@ guide. You can file document formatting bugs against the
   </tbody>
 </table>
 {{end}}
-{{- end}}
+{{end}}
 
 {{define "typeWrap" -}}
 {{if .TypeHref}}<a href="{{hugoRef .TypeHref}}">{{.Type}}</a>{{else}}{{.Type}}{{end}}

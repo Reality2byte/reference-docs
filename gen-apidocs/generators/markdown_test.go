@@ -188,11 +188,11 @@ func TestResolveType(t *testing.T) {
 		typeName, currentCategory, want string
 	}{
 		// From the Deployment resource page, DeploymentSpec lives in definitions/
-		{"DeploymentSpec", testCategorySlug, "../definitions/deploymentspec-v1-apps#DeploymentSpec"},
+		{"DeploymentSpec", testCategorySlug, "../definitions/deployment-spec-v1-apps#DeploymentSpec"},
 		// ObjectMeta same — different dir
-		{"ObjectMeta", testCategorySlug, "../definitions/objectmeta-v1-meta#ObjectMeta"},
+		{"ObjectMeta", testCategorySlug, "../definitions/object-meta-v1-meta#ObjectMeta"},
 		// Self-reference (inside the definitions dir)
-		{"ObjectMeta", "definitions", "objectmeta-v1-meta#ObjectMeta"},
+		{"ObjectMeta", "definitions", "object-meta-v1-meta#ObjectMeta"},
 		// Primitive / unknown → empty string
 		{"string", testCategorySlug, ""},
 		{"UnknownThing", testCategorySlug, ""},

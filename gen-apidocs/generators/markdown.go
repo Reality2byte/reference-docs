@@ -82,8 +82,15 @@ type resourcePage struct {
 	Weight      int
 	Anchor      string
 	Description string
-	Fields      []templateField
+	Sections    []fieldSection
 	Operations  []templateOperation
+}
+
+type fieldSection struct {
+	Title       string
+	Anchor      string
+	Description string
+	Fields      []templateField
 }
 
 type templateField struct {
@@ -124,8 +131,6 @@ type templateResponse struct {
 
 const hugoIndex = "_index.md"
 
-// Title constants are referenced from both the page emitters and
-// tocSortRank; keeping them named prevents the two from drifting.
 const (
 	titleOverview    = "Overview"
 	titleAPIGroups   = "API Groups"
@@ -136,7 +141,6 @@ const (
 
 var _ DocWriter = (*MarkdownWriter)(nil)
 
-//  external k/website links rely on the exact anchor format.
 var anchorRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
 //go:embed templates/resource.tmpl
@@ -179,28 +183,21 @@ func (m *MarkdownWriter) DefaultStaticContent(title string) string {
 
 // Pipeline methods below follow the call order in writer.go's GenerateFiles().
 
+// No-op: kubernetes-api/_index.md in k/website is hand-curated.
 func (m *MarkdownWriter) WriteOverview() error {
-	if err := m.writeSection("_overview.md", "API Overview"); err != nil {
-		return fmt.Errorf("markdown: overview: %w", err)
-	}
-	m.toc = append(m.toc, &mdTOCItem{
-		title:  titleOverview,
-		path:   "_overview.md",
-		weight: m.nextCategoryWeight(),
-	})
 	return nil
 }
 
 func (m *MarkdownWriter) WriteAPIGroupVersions(gvs api.GroupVersions) error {
-	path := filepath.Join(m.OutputDir, "_group_versions.md")
+	path := filepath.Join(m.OutputDir, "group-versions.md")
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("markdown: group versions: %w", err)
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "# API Groups")
-	fmt.Fprintln(f)
+	weight := m.nextCategoryWeight()
+	writeSectionFrontmatter(f, titleAPIGroups, "Kubernetes API groups and their served versions.", weight)
 	fmt.Fprintln(f, "The API Groups and their versions are summarized in the following table.")
 	fmt.Fprintln(f)
 
@@ -224,8 +221,8 @@ func (m *MarkdownWriter) WriteAPIGroupVersions(gvs api.GroupVersions) error {
 
 	m.toc = append(m.toc, &mdTOCItem{
 		title:  titleAPIGroups,
-		path:   "_group_versions.md",
-		weight: m.nextCategoryWeight(),
+		path:   "group-versions.md",
+		weight: weight,
 	})
 	return nil
 }
@@ -272,7 +269,7 @@ func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 		}
 	}
 
-	filename := fmt.Sprintf("%s-%s.md", strings.ToLower(r.Name), r.Definition.Version)
+	filename := fmt.Sprintf("%s-%s.md", kebabName(r.Name), r.Definition.Version)
 	path := filepath.Join(m.OutputDir, slug, filename)
 
 	f, err := os.Create(path)
@@ -288,23 +285,32 @@ func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 	return nil
 }
 
+// definitions/_index.md is required for Hugo to nest definition pages
+// under the section; without it children flatten up to the parent level.
 func (m *MarkdownWriter) WriteDefinitionsOverview() error {
-	if err := m.writeSection("_definitions.md", titleDefinitions); err != nil {
-		return fmt.Errorf("markdown: definitions overview: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(m.OutputDir, "definitions"), 0755); err != nil {
+	dir := filepath.Join(m.OutputDir, "definitions")
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("markdown: definitions dir: %w", err)
 	}
+	indexPath := filepath.Join(dir, hugoIndex)
+	f, err := os.Create(indexPath)
+	if err != nil {
+		return fmt.Errorf("markdown: definitions _index.md: %w", err)
+	}
+	defer f.Close()
+	weight := m.nextCategoryWeight()
+	writeSectionFrontmatter(f, titleDefinitions, "", weight)
+
 	m.toc = append(m.toc, &mdTOCItem{
 		title:  titleDefinitions,
-		path:   "_definitions.md",
-		weight: m.nextCategoryWeight(),
+		path:   filepath.Join("definitions", hugoIndex),
+		weight: weight,
 	})
 	return nil
 }
 
 func (m *MarkdownWriter) WriteDefinition(d *api.Definition) error {
-	filename := strings.ToLower(d.Name) + "-" + string(d.Version)
+	filename := kebabName(d.Name) + "-" + string(d.Version)
 	if d.Group != "" && d.Group != "core" {
 		filename += "-" + string(d.Group)
 	}
@@ -324,23 +330,27 @@ func (m *MarkdownWriter) WriteDefinition(d *api.Definition) error {
 }
 
 func (m *MarkdownWriter) WriteOrphanedOperationsOverview() error {
-	if err := m.writeSection("_operations.md", titleOperations); err != nil {
-		return fmt.Errorf("markdown: operations overview: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(m.OutputDir, "operations"), 0755); err != nil {
+	dir := filepath.Join(m.OutputDir, "operations")
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("markdown: operations dir: %w", err)
 	}
+	indexPath := filepath.Join(dir, hugoIndex)
+	f, err := os.Create(indexPath)
+	if err != nil {
+		return fmt.Errorf("markdown: operations _index.md: %w", err)
+	}
+	defer f.Close()
+	weight := m.nextCategoryWeight()
+	writeSectionFrontmatter(f, titleOperations, "", weight)
+
 	m.toc = append(m.toc, &mdTOCItem{
 		title:  titleOperations,
-		path:   "_operations.md",
-		weight: m.nextCategoryWeight(),
+		path:   filepath.Join("operations", hugoIndex),
+		weight: weight,
 	})
 	return nil
 }
 
-// WriteOperation reuses the "operation" define from resource.tmpl so
-// standalone operation pages match operations rendered inline on
-// resource pages.
 func (m *MarkdownWriter) WriteOperation(o *api.Operation) error {
 	filename := operationSlug(o.ID) + ".md"
 	path := filepath.Join(m.OutputDir, "operations", filename)
@@ -358,15 +368,8 @@ func (m *MarkdownWriter) WriteOperation(o *api.Operation) error {
 	return nil
 }
 
+// No-op: old versions render as resource pages routed to their group folder.
 func (m *MarkdownWriter) WriteOldVersionsOverview() error {
-	if err := m.writeSection("_oldversions.md", titleOldVersions); err != nil {
-		return fmt.Errorf("markdown: old versions overview: %w", err)
-	}
-	m.toc = append(m.toc, &mdTOCItem{
-		title:  titleOldVersions,
-		path:   "_oldversions.md",
-		weight: m.nextCategoryWeight(),
-	})
 	return nil
 }
 
@@ -407,9 +410,6 @@ func (m *MarkdownWriter) Finalize() error {
 	return nil
 }
 
-// buildResourcePage = buildDefinitionPage + operations. currentCategory
-// is the slug of the category this resource lands in; cross-type links
-// are resolved relative to it.
 func (m *MarkdownWriter) buildResourcePage(r *api.Resource, currentCategory string) resourcePage {
 	page := m.buildDefinitionPage(r.Definition, currentCategory)
 	for _, oc := range r.Definition.OperationCategories {
@@ -420,8 +420,8 @@ func (m *MarkdownWriter) buildResourcePage(r *api.Resource, currentCategory stri
 	return page
 }
 
-// buildDefinitionPage is shared by resource pages (which then add
-// operations) and standalone definition pages (which don't).
+// One H2 section per top-level inlined child (Spec, Status, List); deeper
+// inlines stay flattened with dot-notation in their containing section.
 func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition, currentCategory string) resourcePage {
 	page := resourcePage{
 		APIVersion:  groupVersionString(d.GroupFullName, d.Version),
@@ -433,25 +433,103 @@ func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition, currentCategory 
 		Description: d.DescriptionWithEntities,
 	}
 
+	// Inline closure rooted at d gates which types may flatten inline;
+	// anything outside renders as a cross-page link.
+	allowInline := map[string]bool{}
+	var collect func(x *api.Definition)
+	collect = func(x *api.Definition) {
+		for _, c := range x.Inline {
+			if allowInline[c.Key()] {
+				continue
+			}
+			allowInline[c.Key()] = true
+			collect(c)
+		}
+	}
+	collect(d)
+
+	// Section-worthy = directly referenced field type, or d's List type.
+	sectionTypes := map[string]bool{}
+	sectionOrder := []*api.Definition{}
+	addSection := func(def *api.Definition) {
+		if def == nil || sectionTypes[def.Key()] {
+			return
+		}
+		sectionTypes[def.Key()] = true
+		sectionOrder = append(sectionOrder, def)
+	}
+	for _, fld := range d.Fields {
+		if fld.Definition != nil && allowInline[fld.Definition.Key()] {
+			addSection(fld.Definition)
+		}
+	}
+	for _, c := range d.Inline {
+		if c.Name == d.Name+"List" {
+			addSection(c)
+		}
+	}
+
+	visited := map[string]bool{d.Key(): true}
+	root := fieldSection{
+		Title:       d.Name,
+		Anchor:      anchor(d.Name),
+		Description: d.DescriptionWithEntities,
+	}
+	m.appendFields(&root, d, "", currentCategory, allowInline, sectionTypes, visited)
+	page.Sections = append(page.Sections, root)
+
+	for _, s := range sectionOrder {
+		section := fieldSection{
+			Title:       s.Name,
+			Anchor:      anchor(s.Name),
+			Description: s.DescriptionWithEntities,
+		}
+		svisited := map[string]bool{d.Key(): true, s.Key(): true}
+		m.appendFields(&section, s, "", currentCategory, allowInline, sectionTypes, svisited)
+		page.Sections = append(page.Sections, section)
+	}
+	return page
+}
+
+// visited guards against pathological cycles.
+func (m *MarkdownWriter) appendFields(section *fieldSection, d *api.Definition, prefix, currentCategory string, allowInline, sectionTypes, visited map[string]bool) {
 	required := map[string]bool{}
 	for _, name := range d.RequiredFields() {
 		required[name] = true
 	}
 
 	for _, fld := range d.Fields {
-		page.Fields = append(page.Fields, templateField{
-			Name:          fld.Name,
+		fullName := fld.Name
+		if prefix != "" {
+			fullName = prefix + "." + fld.Name
+		}
+
+		typeHref := m.resolveType(fld.Type, currentCategory)
+		if fld.Definition != nil && sectionTypes[fld.Definition.Key()] {
+			typeHref = "#" + anchor(fld.Definition.Name)
+		}
+
+		section.Fields = append(section.Fields, templateField{
+			Name:          fullName,
 			Type:          fld.Type,
-			TypeHref:      m.resolveType(fld.Type, currentCategory),
+			TypeHref:      typeHref,
 			Description:   fld.Description,
 			Required:      required[fld.Name],
-			ConstValue:    constValueFor(fld.Name, page.APIVersion, page.Kind),
+			ConstValue:    constValueFor(fullName, "", ""),
 			PatchStrategy: fld.PatchStrategy,
 			PatchMergeKey: fld.PatchMergeKey,
 		})
-	}
 
-	return page
+		if fld.Definition == nil {
+			continue
+		}
+		key := fld.Definition.Key()
+		if !allowInline[key] || sectionTypes[key] || visited[key] {
+			continue
+		}
+		visited[key] = true
+		m.appendFields(section, fld.Definition, fullName, currentCategory, allowInline, sectionTypes, visited)
+	}
 }
 
 func (m *MarkdownWriter) buildTemplateOperation(o *api.Operation, currentCategory string) templateOperation {
@@ -507,7 +585,7 @@ func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 			if r.Definition == nil {
 				continue
 			}
-			filename := strings.ToLower(r.Name) + "-" + string(r.Definition.Version)
+			filename := kebabName(r.Name) + "-" + string(r.Definition.Version)
 			m.recordLink(r.Definition.Name, slug, filename, r.Definition.Version)
 		}
 	}
@@ -518,7 +596,7 @@ func (m *MarkdownWriter) linkDefinitions(all map[string]*api.Definition) {
 		if d.InToc || d.IsInlined || d.IsOldVersion {
 			continue
 		}
-		filename := strings.ToLower(d.Name) + "-" + string(d.Version)
+		filename := kebabName(d.Name) + "-" + string(d.Version)
 		if d.Group != "" && d.Group != "core" {
 			filename += "-" + string(d.Group)
 		}
@@ -646,6 +724,17 @@ func escape(s string) string {
 
 func kebabCase(s string) string {
 	return strings.Trim(anchorRegex.ReplaceAllString(strings.ToLower(s), "-"), "-")
+}
+
+var (
+	kebabBoundary1 = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+	kebabBoundary2 = regexp.MustCompile(`([A-Z])([A-Z][a-z])`)
+)
+
+func kebabName(s string) string {
+	s = kebabBoundary2.ReplaceAllString(s, "$1-$2")
+	s = kebabBoundary1.ReplaceAllString(s, "$1-$2")
+	return strings.ToLower(s)
 }
 
 func groupVersionString(group string, version api.ApiVersion) string {
