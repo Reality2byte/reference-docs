@@ -63,6 +63,9 @@ func TestEscape(t *testing.T) {
 	if got := escape("no change"); got != "no change" {
 		t.Errorf("escape: got %q", got)
 	}
+	if got := escape("Allowed values.  Possible enum values:  - `\"A\"` first.  - `\"B\"` second."); got != "Allowed values.<br/><br/>Possible enum values:<br/> - `\"A\"` first.<br/> - `\"B\"` second." {
+		t.Errorf("escape enum list: got %q", got)
+	}
 }
 
 func TestKebabCase(t *testing.T) {

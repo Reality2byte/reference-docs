@@ -143,6 +143,11 @@ var _ DocWriter = (*MarkdownWriter)(nil)
 
 var anchorRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
+var (
+	enumHeaderRegex = regexp.MustCompile(`\s+Possible enum values:`)
+	enumBulletRegex = regexp.MustCompile(`\s+- ` + "`")
+)
+
 //go:embed templates/resource.tmpl
 var resourceTemplateSrc string
 
@@ -644,17 +649,6 @@ func (m *MarkdownWriter) resolveType(typeName, currentCategory string) string {
 	return path + "#" + info.Anchor
 }
 
-// writeSection falls back to a `# Title` stub when
-// config/sections/<filename> is absent.
-func (m *MarkdownWriter) writeSection(filename, title string) error {
-	content := readOptionalSection(filename)
-	if content == "" {
-		content = "# " + title + "\n"
-	}
-	dst := filepath.Join(m.OutputDir, filename)
-	return os.WriteFile(dst, []byte(content), 0644)
-}
-
 // readOptionalSection swallows read errors on purpose; missing or
 // unreadable section files fall back to generated content.
 func readOptionalSection(name string) string {
@@ -719,7 +713,10 @@ func anchor(s string) string {
 // escape covers the only markdown-breaking character in OpenAPI descriptions:
 // raw `<` that would otherwise be read as HTML.
 func escape(s string) string {
-	return strings.ReplaceAll(s, "<", `\<`)
+	s = strings.ReplaceAll(s, "<", `\<`)
+	s = enumHeaderRegex.ReplaceAllString(s, "<br/><br/>Possible enum values:")
+	s = enumBulletRegex.ReplaceAllString(s, "<br/> - `")
+	return s
 }
 
 func kebabCase(s string) string {
