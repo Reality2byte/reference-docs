@@ -31,7 +31,11 @@ import (
 // rewrite any *.golden files from current output.
 var update = flag.Bool("update", false, "rewrite *.golden files from test output")
 
-const testCategorySlug = "workloads-apis"
+const (
+	// Match a real API group so fixture mirrors what auto-detect produces.
+	testCategoryName = "Apps"
+	testCategorySlug = "apps"
+)
 
 func TestAnchor(t *testing.T) {
 	cases := []struct {
@@ -63,7 +67,7 @@ func TestEscape(t *testing.T) {
 
 func TestKebabCase(t *testing.T) {
 	cases := map[string]string{
-		"Workloads APIs":       testCategorySlug,
+		testCategoryName:       testCategorySlug,
 		"Service Discovery":    "service-discovery",
 		"Cluster - Admin":      "cluster-admin",
 		"  Leading trailing  ": "leading-trailing",
@@ -131,7 +135,7 @@ func TestWriteResourceGolden(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(m.OutputDir, testCategorySlug), 0755); err != nil {
 		t.Fatal(err)
 	}
-	m.currentCategory = mdCategory{name: "Workloads APIs", slug: testCategorySlug}
+	m.currentCategory = mdCategory{name: testCategoryName, slug: testCategorySlug}
 
 	r := fabricateDeploymentResource()
 	if err := m.WriteResource(r); err != nil {
@@ -159,6 +163,82 @@ func TestWriteOperationGolden(t *testing.T) {
 	compareWithGolden(t,
 		filepath.Join(m.OutputDir, "operations", "listcorev1pod.md"),
 		"testdata/operation-list.golden.md")
+}
+
+func TestResolveType(t *testing.T) {
+	m := &MarkdownWriter{linkMap: map[string]linkInfo{}}
+	m.linkResources([]api.ResourceCategory{
+		{
+			Name: testCategoryName,
+			Resources: api.Resources{
+				{Name: "Deployment", Definition: &api.Definition{Name: "Deployment", Version: api.ApiVersion("v1")}},
+			},
+		},
+	})
+	m.linkDefinitions(map[string]*api.Definition{
+		"io.k8s.api.apps.v1.DeploymentSpec": {
+			Name: "DeploymentSpec", Group: api.ApiGroup("apps"), Version: api.ApiVersion("v1"),
+		},
+		"io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta": {
+			Name: "ObjectMeta", Group: api.ApiGroup("meta"), Version: api.ApiVersion("v1"),
+		},
+	})
+
+	cases := []struct {
+		typeName, currentCategory, want string
+	}{
+		// From the Deployment resource page, DeploymentSpec lives in definitions/
+		{"DeploymentSpec", testCategorySlug, "../definitions/deployment-spec-v1-apps#DeploymentSpec"},
+		// ObjectMeta same — different dir
+		{"ObjectMeta", testCategorySlug, "../definitions/object-meta-v1-meta#ObjectMeta"},
+		// Self-reference (inside the definitions dir)
+		{"ObjectMeta", "definitions", "object-meta-v1-meta#ObjectMeta"},
+		// Primitive / unknown → empty string
+		{"string", testCategorySlug, ""},
+		{"UnknownThing", testCategorySlug, ""},
+		// Resource path: Deployment lives under apps/
+		{"Deployment", "definitions", "../apps/deployment-v1#Deployment"},
+	}
+	for _, c := range cases {
+		if got := m.resolveType(c.typeName, c.currentCategory); got != c.want {
+			t.Errorf("resolveType(%q, %q) = %q, want %q", c.typeName, c.currentCategory, got, c.want)
+		}
+	}
+}
+
+func TestRecordLinkPrecedence(t *testing.T) {
+	m := &MarkdownWriter{linkMap: map[string]linkInfo{}}
+
+	// Pretend Deployment is first seen as a standalone definition...
+	m.recordLink("Deployment", "definitions", "deployment-v1-apps", api.ApiVersion("v1"))
+	if got := m.linkMap["Deployment"].Category; got != "definitions" {
+		t.Fatalf("initial category = %q, want definitions", got)
+	}
+
+	// ...then as a resource. Resource should win.
+	m.recordLink("Deployment", "apps", "deployment-v1", api.ApiVersion("v1"))
+	if got := m.linkMap["Deployment"].Category; got != "apps" {
+		t.Errorf("after resource record, category = %q, want apps", got)
+	}
+
+	// A later standalone-definition record for the same name must not clobber.
+	m.recordLink("Deployment", "definitions", "deployment-v1-apps", api.ApiVersion("v1"))
+	if got := m.linkMap["Deployment"].Category; got != "apps" {
+		t.Errorf("after late definitions record, category = %q, want apps", got)
+	}
+
+	// Version bump within same bucket wins.
+	m.recordLink("HPA", "autoscaling", "horizontalpodautoscaler-v1", api.ApiVersion("v1"))
+	m.recordLink("HPA", "autoscaling", "horizontalpodautoscaler-v2", api.ApiVersion("v2"))
+	if got := m.linkMap["HPA"].Version; string(got) != "v2" {
+		t.Errorf("HPA version = %q, want v2", got)
+	}
+
+	// Older version must not clobber newer.
+	m.recordLink("HPA", "autoscaling", "horizontalpodautoscaler-v1", api.ApiVersion("v1"))
+	if got := m.linkMap["HPA"].Version; string(got) != "v2" {
+		t.Errorf("after old version, HPA version = %q, want v2", got)
+	}
 }
 
 // --- fixture helpers ---

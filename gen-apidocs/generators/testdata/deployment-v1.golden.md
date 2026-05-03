@@ -25,6 +25,7 @@ guide. You can file document formatting bugs against the
 
 `import "k8s.io/api/apps/v1"`
 
+
 ## Deployment {#Deployment}
 
 Deployment enables declarative updates for Pods and ReplicaSets.
@@ -35,11 +36,11 @@ Deployment enables declarative updates for Pods and ReplicaSets.
   <thead><tr><th>Field</th><th>Description</th></tr></thead>
   <tbody>
     <tr>
-      <td><code>apiVersion</code><br/><em>string</em><br/><em>const: <code>apps/v1</code></em></td>
+      <td><code>apiVersion</code><br/><em>string</em></td>
       <td>APIVersion defines the versioned schema of this representation of an object.</td>
     </tr>
     <tr>
-      <td><code>kind</code><br/><em>string</em><br/><em>const: <code>Deployment</code></em></td>
+      <td><code>kind</code><br/><em>string</em></td>
       <td>Kind is a string value representing the REST resource.</td>
     </tr>
     <tr>
@@ -56,6 +57,9 @@ Deployment enables declarative updates for Pods and ReplicaSets.
     </tr>
   </tbody>
 </table>
+
+
+
 
 
 
