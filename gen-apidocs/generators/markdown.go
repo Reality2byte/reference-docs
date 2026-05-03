@@ -165,7 +165,7 @@ func hugoRef(path string) string {
 }
 
 func NewMarkdownWriter(config *api.Config, copyright, title string) DocWriter {
-	outputDir := filepath.Join(api.BuildDir, "markdown")
+	outputDir := api.BuildDir
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "MarkdownWriter: failed to create output dir %s: %v\n", outputDir, err)
 	}

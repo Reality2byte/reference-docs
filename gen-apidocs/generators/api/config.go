@@ -60,7 +60,7 @@ func normalizeGroupLabel(s string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
 }
 
-// Directory for output files
+// Directory for backend output files
 var BuildDir string
 
 // Directory for configuration and data files
@@ -77,7 +77,13 @@ var VersionedConfigDir string
 
 func NewConfig() (*Config, error) {
 	// Initialize global directories
-	BuildDir = filepath.Join(*WorkDir, "build")
+	buildRoot := filepath.Join(*WorkDir, "build")
+	switch *Backend {
+	case "markdown":
+		BuildDir = filepath.Join(buildRoot, "markdown")
+	default:
+		BuildDir = filepath.Join(buildRoot, "html")
+	}
 	ConfigDir = filepath.Join(*WorkDir, "config")
 	IncludesDir = filepath.Join(BuildDir, "includes")
 	SectionsDir = filepath.Join(ConfigDir, "sections")
