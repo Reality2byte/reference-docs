@@ -110,18 +110,24 @@ api: cleanapi
 
 # Build API docs as markdown (Hugo-compatible output in gen-apidocs/build/markdown/).
 # Output is intended to replace gen-resourcesdocs once parity is reached.
-apimd: cleanapi
+apimd: cleanapimd
 	cd $(APISRC) && go run main.go --kubernetes-release=$(K8SRELEASE_PREFIX) --work-dir=. --auto-detect --backend=markdown
 
 cleanapi:
-	rm -rf $(shell pwd)/gen-apidocs/build
+	rm -rf $(shell pwd)/gen-apidocs/build/html
+	rm -rf $(shell pwd)/gen-apidocs/build/includes
+	rm -f $(shell pwd)/gen-apidocs/build/index.html
+	rm -f $(shell pwd)/gen-apidocs/build/navData.js
+
+cleanapimd:
+	rm -rf $(shell pwd)/gen-apidocs/build/markdown
 
 copyapi: api
 	mkdir -p $(APIDST)
-	cp $(APISRC)/build/index.html $(APIDST)/index.html
+	cp $(APISRC)/build/html/index.html $(APIDST)/index.html
 	# copy the new navData.js
 	mkdir -p $(APIDST)/js
-	cp $(APISRC)/build/navData.js $(APIDST)/js/
+	cp $(APISRC)/build/html/navData.js $(APIDST)/js/
 
 # Build resource reference
 genresources:
