@@ -131,6 +131,7 @@ copyapi: api
 
 # Build resource reference
 genresources:
+	@echo "WARNING: gen-resourcesdocs is deprecated; use make apimd instead."
 	make -C gen-resourcesdocs kwebsite
 
 # Build config API reference

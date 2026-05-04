@@ -1,3 +1,8 @@
+> **Deprecated:** `gen-resourcesdocs` is deprecated in favor of
+> `gen-apidocs --backend=markdown` / `make apimd`.
+> It is kept temporarily for transition and will be removed after the
+> gen-apidocs markdown output fully replaces it in kubernetes/website.
+
 # Kubernetes API resources documentation generator
 
 This tool extracts information from the OpenAPI specification file of the [Kubernetes API](https://github.com/kubernetes/kubernetes/blob/master/api/openapi-spec/swagger.json) and creates documentation in Markdown format, suitable for the [Kubernetes website](https://kubernetes.io/docs/reference/kubernetes-api/).
