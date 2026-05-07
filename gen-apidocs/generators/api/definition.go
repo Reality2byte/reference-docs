@@ -49,7 +49,7 @@ var _INLINE_DEFINITIONS = []inlineDefinition{
 func NewDefinitions(config *Config, specs []*loads.Document) (*Definitions, error) {
 	s := &Definitions{
 		All:           map[string]*Definition{},
-		ByKind:        map[string]SortDefinitionsByVersion{},
+		ByKind:        map[byKindKey]SortDefinitionsByVersion{},
 		GroupVersions: map[string]ApiVersions{},
 	}
 
@@ -68,41 +68,35 @@ func (s *Definitions) initialize() {
 	}
 
 	for _, d := range s.All {
-		s.ByKind[d.Name] = append(s.ByKind[d.Name], d)
+		key := byKindKey{Group: string(d.Group), Kind: d.Name}
+		s.ByKind[key] = append(s.ByKind[key], d)
 	}
 
-	// If there are multiple versions for an object.  Mark all by the newest as old
-	// Sort the ByKind index in by version with newer versions coming before older versions.
+	// Within each (group,kind) bucket, sort newest-first and flag everything
+	// past index 0 as an old version.
 	for k, l := range s.ByKind {
 		if len(l) <= 1 {
 			continue
 		}
 		sort.Sort(l)
-		// Mark all version as old
 		for i, d := range l {
-			if len(l) > 1 {
-				if i == 0 {
-					fmt.Printf("Current Version: %s.%s.%s", d.Group, d.Version, k)
-					if len(l) > i-1 {
-						fmt.Printf(" Old Versions: [")
-					}
-				} else {
-					fmt.Printf("%s.%s.%s", d.Group, d.Version, k)
-					if len(l) > i-1 {
-						fmt.Printf(",")
-					}
-					d.IsOldVersion = true
+			if i == 0 {
+				fmt.Printf("Current Version: %s.%s.%s", d.Group, d.Version, k.Kind)
+				fmt.Printf(" Old Versions: [")
+			} else {
+				fmt.Printf("%s.%s.%s", d.Group, d.Version, k.Kind)
+				if i+1 < len(l) {
+					fmt.Printf(",")
 				}
+				d.IsOldVersion = true
 			}
 		}
-		if len(l) > 1 {
-			fmt.Printf("]\n")
-		}
+		fmt.Printf("]\n")
 	}
 
-	// Initialize OtherVersions
+	// Initialize OtherVersions (same group + same name, different version)
 	for _, d := range s.All {
-		defs := s.ByKind[d.Name]
+		defs := s.ByKind[byKindKey{Group: string(d.Group), Kind: d.Name}]
 		others := []*Definition{}
 		for _, def := range defs {
 			if def.Version != d.Version {
@@ -331,12 +325,8 @@ func (s *Definitions) InitializeFields(d *Definition) {
 // FindNewestVersion returns the newest known version for the given group/kind.
 // Returns an empty string if no matching definition is found.
 func (s *Definitions) FindNewestVersion(group, kind string) string {
-	defs := s.ByKind[kind]
 	newest := ""
-	for _, d := range defs {
-		if string(d.Group) != group {
-			continue
-		}
+	for _, d := range s.ByKind[byKindKey{Group: group, Kind: kind}] {
 		if newest == "" || compareVersionStrings(string(d.Version), newest) > 0 {
 			newest = string(d.Version)
 		}
