@@ -66,17 +66,20 @@ createversiondirs:
 
 # Build kubectl docs
 cleancli:
+	@echo "WARNING: gen-kubectl is deprecated; use gen-compdocs kubectl instead."
 	sudo rm -f main
 	sudo rm -rf $(shell pwd)/gen-kubectldocs/generators/includes
 	sudo rm -rf $(shell pwd)/gen-kubectldocs/generators/build
 	sudo rm -rf $(shell pwd)/gen-kubectldocs/generators/manifest.json
 
 cli: cleancli
+	@echo "WARNING: gen-kubectl is deprecated; use gen-compdocs kubectl instead."
 	cd gen-kubectldocs && go mod download && go run main.go --kubernetes-version v$(K8SRELEASEDIR)
 	mkdir -p $(CLISRC)
 	docker run -v $(shell pwd)/gen-kubectldocs/generators/includes:/source -v $(shell pwd)/gen-kubectldocs/generators/build:/build -v $(shell pwd)/gen-kubectldocs/generators/:/manifest brianpursley/brodocs:latest
 
 copycli: cli
+	@echo "WARNING: gen-kubectl is deprecated; use gen-compdocs kubectl instead."
 	cp gen-kubectldocs/generators/build/index.html $(WEBROOT)/static/docs/reference/generated/kubectl/kubectl-commands.html
 	cp gen-kubectldocs/generators/build/navData.js $(WEBROOT)/static/docs/reference/generated/kubectl/navData.js
 	cp $(CLISRC)/scroll.js $(CLIDST)/scroll.js
