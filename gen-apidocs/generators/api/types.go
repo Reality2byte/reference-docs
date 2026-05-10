@@ -237,12 +237,18 @@ type Definition struct {
 
 type GroupVersions map[string]ApiVersions
 
+// byKindKey qualifies a kind name with its group so that cross-group
+// collisions (e.g. core/v1 Event vs events.k8s.io/v1 Event) don't share
+// a Definitions.ByKind bucket.
+type byKindKey struct {
+	Group string
+	Kind  string
+}
+
 // Definitions indexes open-api definitions
 type Definitions struct {
-	All    map[string]*Definition
-	ByKind map[string]SortDefinitionsByVersion
-
-	// Available API groups and their versions
+	All           map[string]*Definition
+	ByKind        map[byKindKey]SortDefinitionsByVersion
 	GroupVersions GroupVersions
 }
 
