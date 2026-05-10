@@ -19,36 +19,33 @@
 
 
 WEBROOT=${K8S_WEBROOT}
-
-# Validate K8S_ROOT is set and points to valid Kubernetes source
-ifeq ($(K8S_ROOT),)
-  $(error K8S_ROOT environment variable is not set. Please set it to your Kubernetes clone path. Example: export K8S_ROOT=$GOPATH/src/k8s.io/kubernetes)
-endif
-
 K8SROOT=${K8S_ROOT}
-
-# Verify K8S_ROOT points to a valid Kubernetes repository
-ifeq ($(wildcard $(K8SROOT)/go.mod),)
-  $(error K8S_ROOT ($(K8SROOT)) does not appear to contain a valid Kubernetes repository. Please ensure it points to a Kubernetes source directory with go.mod file)
-endif
 K8SRELEASE=${K8S_RELEASE}
-
-ifeq ($(K8SRELEASE),)
-  $(error Please define K8S_RELEASE, e.g. 'export K8S_RELEASE=1.21.0')
-endif
-
-ifeq ($(K8SROOT),)
-  $(error Please define K8S_ROOT, e.g. 'export K8S_ROOT=$GOPATH/src/k8s.io/kubernetes')
-endif
-
-ifeq ($(WEBROOT),)
-  $(error Please define K8S_WEBROOT, e.g. 'export K8S_WEBROOT=$GOPATH/src/k8s.io/website')
-endif
 
 K8SRELEASE_PREFIX=$(shell echo "$(K8SRELEASE)" | cut -c 1-4)
 
 # create a directory name from release string, e.g. 1.17 -> 1_17
 K8SRELEASEDIR=$(shell echo "$(K8SRELEASE_PREFIX)" | sed "s/\./_/g")
+
+# Per-target guards. Recipes that need a specific env var add the matching
+# guard as a dependency rather than failing the whole Makefile at parse time.
+require-k8sroot:
+	@if [ -z "$(K8SROOT)" ]; then \
+		echo "K8S_ROOT not set. Example: export K8S_ROOT=~/go/src/k8s.io/kubernetes"; exit 1; \
+	fi
+	@if [ ! -f "$(K8SROOT)/go.mod" ]; then \
+		echo "K8S_ROOT ($(K8SROOT)) is not a Kubernetes clone (no go.mod)."; exit 1; \
+	fi
+
+require-k8srelease:
+	@if [ -z "$(K8SRELEASE)" ]; then \
+		echo "K8S_RELEASE not set. Example: export K8S_RELEASE=1.36.0"; exit 1; \
+	fi
+
+require-webroot:
+	@if [ -z "$(WEBROOT)" ]; then \
+		echo "K8S_WEBROOT not set. Example: export K8S_WEBROOT=~/src/k8s.io/website"; exit 1; \
+	fi
 
 CLISRC=gen-kubectldocs/generators/build
 CLIDST=$(WEBROOT)/static/docs/reference/generated/kubectl
@@ -56,10 +53,15 @@ CLISRCFONT=$(CLISRC)/node_modules/font-awesome
 CLIDSTFONT=$(CLIDST)/node_modules/font-awesome
 
 all:
-	@echo "Supported targets:\n\tcli api apimd comp copycli copyapi createversiondirs genresources updateapispec configapi"
+	@echo "Supported targets:"
+	@echo "  Build:    api apimd cli comp configapi"
+	@echo "  Copy:     copyapi copyapimd copycli copyconfigapi"
+	@echo "  Setup:    createversiondirs updateapispec"
+	@echo "  Clean:    cleanapi cleanapimd cleancli cleancomp"
+	@echo "  Other:    genresources (deprecated)"
 
 # create directories for new release
-createversiondirs:
+createversiondirs: require-k8srelease
 	@echo "Calling set_version_dirs.sh"
 	./set_version_dirs.sh
 	@echo "K8S Release dir: $(K8SRELEASEDIR)"
@@ -72,13 +74,13 @@ cleancli:
 	sudo rm -rf $(shell pwd)/gen-kubectldocs/generators/build
 	sudo rm -rf $(shell pwd)/gen-kubectldocs/generators/manifest.json
 
-cli: cleancli
+cli: require-k8srelease cleancli
 	@echo "WARNING: gen-kubectl is deprecated; use gen-compdocs kubectl instead."
 	cd gen-kubectldocs && go mod download && go run main.go --kubernetes-version v$(K8SRELEASEDIR)
 	mkdir -p $(CLISRC)
 	docker run -v $(shell pwd)/gen-kubectldocs/generators/includes:/source -v $(shell pwd)/gen-kubectldocs/generators/build:/build -v $(shell pwd)/gen-kubectldocs/generators/:/manifest brianpursley/brodocs:latest
 
-copycli: cli
+copycli: require-webroot cli
 	@echo "WARNING: gen-kubectl is deprecated; use gen-compdocs kubectl instead."
 	cp gen-kubectldocs/generators/build/index.html $(WEBROOT)/static/docs/reference/generated/kubectl/kubectl-commands.html
 	cp gen-kubectldocs/generators/build/navData.js $(WEBROOT)/static/docs/reference/generated/kubectl/navData.js
@@ -103,17 +105,16 @@ comp: cleancomp
 APISRC=gen-apidocs
 APIDST=$(WEBROOT)/static/docs/reference/generated/kubernetes-api/v$(K8SRELEASE_PREFIX)
 
-updateapispec: createversiondirs
-	CURDIR=$(shell pwd)
+updateapispec: require-k8sroot require-k8srelease createversiondirs
 	@echo "Updating swagger.json for release v$(K8SRELEASE)"
 	cd $(K8SROOT) && git show "v$(K8SRELEASE):api/openapi-spec/swagger.json" > $(CURDIR)/$(APISRC)/config/v$(K8SRELEASEDIR)/swagger.json
 
-api: cleanapi
+api: require-k8srelease cleanapi
 	cd $(APISRC) && go run main.go --kubernetes-release=$(K8SRELEASE_PREFIX) --work-dir=. --auto-detect
 
 # Build API docs as markdown (Hugo-compatible output in gen-apidocs/build/markdown/).
 # Output is intended to replace gen-resourcesdocs once parity is reached.
-apimd: cleanapimd
+apimd: require-k8srelease cleanapimd
 	cd $(APISRC) && go run main.go --kubernetes-release=$(K8SRELEASE_PREFIX) --work-dir=. --auto-detect --backend=markdown
 
 cleanapi:
@@ -125,12 +126,25 @@ cleanapi:
 cleanapimd:
 	rm -rf $(shell pwd)/gen-apidocs/build/markdown
 
-copyapi: api
+copyapi: require-webroot api
 	mkdir -p $(APIDST)
 	cp $(APISRC)/build/html/index.html $(APIDST)/index.html
 	# copy the new navData.js
 	mkdir -p $(APIDST)/js
 	cp $(APISRC)/build/html/navData.js $(APIDST)/js/
+
+# Copy the markdown API reference into k/website. The top-level
+# _index.md is hand-curated (glossary shortcode, card metadata) and
+# preserved across regenerations.
+APIMDSRC=$(APISRC)/build/markdown
+APIMDDST=$(WEBROOT)/content/en/docs/reference/kubernetes-api
+
+copyapimd: require-webroot apimd
+	@if [ -f $(APIMDDST)/_index.md ]; then cp $(APIMDDST)/_index.md /tmp/kubernetes-api-index.md; fi
+	rm -rf $(APIMDDST)
+	mkdir -p $(APIMDDST)
+	cp -r $(APIMDSRC)/. $(APIMDDST)/
+	@if [ -f /tmp/kubernetes-api-index.md ]; then cp /tmp/kubernetes-api-index.md $(APIMDDST)/_index.md; fi
 
 # Build resource reference
 genresources:
@@ -143,5 +157,5 @@ CONFIGDST=$(WEBROOT)/content/en/docs/reference/config-api/
 configapi:
 	make -C genref
 
-copyconfigapi: configapi
+copyconfigapi: require-webroot configapi
 	cp $(CONFIGSRC)/*.md $(CONFIGDST)/
