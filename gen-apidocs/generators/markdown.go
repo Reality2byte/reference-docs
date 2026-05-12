@@ -268,10 +268,7 @@ func (m *MarkdownWriter) WriteResourceCategory(name, file string) error {
 func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 	slug := m.currentCategory.slug
 	if r.Definition != nil && r.Definition.IsOldVersion {
-		slug = kebabCase(string(r.Definition.Group))
-		if err := os.MkdirAll(filepath.Join(m.OutputDir, slug), 0755); err != nil {
-			return fmt.Errorf("markdown: group dir %s: %w", slug, err)
-		}
+		return nil // markdown backend omits old-version pages; current version is canonical
 	}
 
 	filename := fmt.Sprintf("%s-%s.md", kebabName(r.Name), r.Definition.Version)
