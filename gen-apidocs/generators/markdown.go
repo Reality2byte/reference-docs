@@ -301,7 +301,7 @@ func (m *MarkdownWriter) WriteDefinitionsOverview() error {
 	}
 	defer f.Close()
 	weight := m.nextCategoryWeight()
-	writeSectionFrontmatter(f, titleDefinitions, "", weight)
+	writeSectionFrontmatter(f, titleDefinitions, "", weight, hideFromNav())
 
 	m.toc = append(m.toc, &mdTOCItem{
 		title:  titleDefinitions,
@@ -657,9 +657,22 @@ func readOptionalSection(name string) string {
 	return string(data)
 }
 
+type sectionFrontmatterOpt func(w io.Writer)
+
+// hideFromNav drops the section and its children from the Docsy sidebar.
+// Cross-ref-only sections (definitions) would otherwise add hundreds of
+// nav entries and slow every page render across k/website.
+func hideFromNav() sectionFrontmatterOpt {
+	return func(w io.Writer) {
+		fmt.Fprintln(w, "_build:")
+		fmt.Fprintln(w, "  list: never")
+		fmt.Fprintln(w, "toc_hide: true")
+	}
+}
+
 // writeSectionFrontmatter emits the minimal frontmatter for non-resource
 // pages. Resource pages go through resource.tmpl instead.
-func writeSectionFrontmatter(w io.Writer, title, description string, weight int) {
+func writeSectionFrontmatter(w io.Writer, title, description string, weight int, opts ...sectionFrontmatterOpt) {
 	fmt.Fprintln(w, "---")
 	fmt.Fprintln(w, `content_type: "api_reference"`)
 	if description != "" {
@@ -668,6 +681,9 @@ func writeSectionFrontmatter(w io.Writer, title, description string, weight int)
 	fmt.Fprintf(w, "title: %q\n", title)
 	fmt.Fprintf(w, "weight: %d\n", weight)
 	fmt.Fprintln(w, "auto_generated: true")
+	for _, o := range opts {
+		o(w)
+	}
 	fmt.Fprintln(w, "---")
 	fmt.Fprintln(w)
 }
