@@ -267,8 +267,6 @@ func (m *MarkdownWriter) WriteResourceCategory(name, file string) error {
 
 	if body := readOptionalSection(file + ".md"); body != "" {
 		fmt.Fprintln(f, body)
-	} else {
-		fmt.Fprintf(f, "# %s\n", name)
 	}
 
 	m.currentCategory = mdCategory{name: name, slug: slug}
