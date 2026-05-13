@@ -48,6 +48,9 @@ type MarkdownWriter struct {
 	// linkMap maps kind name → page path for cross-reference resolution.
 	linkMap map[string]linkInfo
 
+	classifications map[string]defClassification
+	inlinedByParent map[string][]*api.Definition
+
 	toc []*mdTOCItem
 
 	// finalized guards against Finalize being called twice by GenerateFiles.
@@ -131,6 +134,8 @@ type templateResponse struct {
 
 const hugoIndex = "_index.md"
 
+const apimachineryPrefix = "io.k8s.apimachinery."
+
 const (
 	titleOverview    = "Overview"
 	titleAPIGroups   = "API Groups"
@@ -138,6 +143,15 @@ const (
 	titleOperations  = "Operations"
 	titleOldVersions = "Old API Versions"
 )
+
+// utilityStandalone pins core/v1 utility kinds the BFS can't distinguish
+// from real sub-types.
+var utilityStandalone = map[string]bool{
+	"LocalObjectReference":      true,
+	"NodeSelector":              true,
+	"NodeSelectorTerm":          true,
+	"TypedLocalObjectReference": true,
+}
 
 var _ DocWriter = (*MarkdownWriter)(nil)
 
@@ -174,6 +188,8 @@ func NewMarkdownWriter(config *api.Config, copyright, title string) DocWriter {
 		OutputDir: outputDir,
 		linkMap:   make(map[string]linkInfo),
 	}
+	// Order matters: linkMap consults classifications to alias inlined types.
+	m.classifications = m.classifyDefinitions()
 	m.buildLinkMap(config)
 	return m
 }
@@ -312,6 +328,9 @@ func (m *MarkdownWriter) WriteDefinitionsOverview() error {
 }
 
 func (m *MarkdownWriter) WriteDefinition(d *api.Definition) error {
+	if m.classifications[d.Key()].Mode == classifyInline {
+		return nil
+	}
 	filename := kebabName(d.Name) + "-" + string(d.Version)
 	if d.Group != "" && d.Group != "core" {
 		filename += "-" + string(d.Group)
@@ -471,6 +490,14 @@ func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition, currentCategory 
 		}
 	}
 
+	if siblings := m.inlinedByParent[d.Key()]; len(siblings) > 0 {
+		sorted := append([]*api.Definition(nil), siblings...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+		for _, c := range sorted {
+			addSection(c)
+		}
+	}
+
 	visited := map[string]bool{d.Key(): true}
 	root := fieldSection{
 		Title:       d.Name,
@@ -580,6 +607,88 @@ func (m *MarkdownWriter) buildLinkMap(config *api.Config) {
 	m.linkDefinitions(config.Definitions.All)
 }
 
+type classifyMode int
+
+const (
+	classifySkip classifyMode = iota
+	classifyInline
+	classifyStandalone
+)
+
+type defClassification struct {
+	Mode       classifyMode
+	InlineInto *api.Definition // non-nil iff Mode == classifyInline
+}
+
+// classifyDefinitions returns each definition's emit mode.
+func (m *MarkdownWriter) classifyDefinitions() map[string]defClassification {
+	out := make(map[string]defClassification, len(m.Config.Definitions.All))
+	m.inlinedByParent = map[string][]*api.Definition{}
+	for _, d := range m.Config.Definitions.All {
+		if d.IsOldVersion || d.IsInlined || d.InToc {
+			out[d.Key()] = defClassification{Mode: classifySkip}
+			continue
+		}
+		if strings.HasPrefix(d.SwaggerKey, apimachineryPrefix) || utilityStandalone[d.Name] {
+			out[d.Key()] = defClassification{Mode: classifyStandalone}
+			continue
+		}
+		if home := m.closestTopLevelHome(d); home != nil {
+			out[d.Key()] = defClassification{Mode: classifyInline, InlineInto: home}
+			m.inlinedByParent[home.Key()] = append(m.inlinedByParent[home.Key()], d)
+			continue
+		}
+		out[d.Key()] = defClassification{Mode: classifyStandalone}
+	}
+	return out
+}
+
+// closestTopLevelHome returns the unique closest InToc ancestor of d via
+// AppearsIn, or nil on a tie or no reachable top-level.
+func (m *MarkdownWriter) closestTopLevelHome(d *api.Definition) *api.Definition {
+	type qItem struct {
+		def  *api.Definition
+		dist int
+	}
+	seen := map[string]bool{d.Key(): true}
+	queue := []qItem{{def: d, dist: 0}}
+
+	minDist := -1
+	winners := []*api.Definition{}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		if minDist >= 0 && cur.dist > minDist {
+			break
+		}
+
+		for _, parent := range cur.def.AppearsIn {
+			if parent == nil || seen[parent.Key()] {
+				continue
+			}
+			seen[parent.Key()] = true
+			nextDist := cur.dist + 1
+			if parent.InToc {
+				if minDist < 0 {
+					minDist = nextDist
+				}
+				if nextDist == minDist {
+					winners = append(winners, parent)
+				}
+				continue
+			}
+			queue = append(queue, qItem{def: parent, dist: nextDist})
+		}
+	}
+
+	if len(winners) == 1 {
+		return winners[0]
+	}
+	return nil
+}
+
 func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 	for _, c := range categories {
 		slug := kebabCase(c.Name)
@@ -589,6 +698,14 @@ func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 			}
 			filename := kebabName(r.Name) + "-" + string(r.Definition.Version)
 			m.recordLink(r.Definition.Name, slug, filename, r.Definition.Version)
+			// Types inlined into this page (pattern-matched and refcount-derived)
+			// share the parent's URL; the anchor on the parent is what selects them.
+			for _, child := range r.Definition.Inline {
+				m.recordLink(child.Name, slug, filename, child.Version)
+			}
+			for _, child := range m.inlinedByParent[r.Definition.Key()] {
+				m.recordLink(child.Name, slug, filename, child.Version)
+			}
 		}
 	}
 }
@@ -596,6 +713,9 @@ func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 func (m *MarkdownWriter) linkDefinitions(all map[string]*api.Definition) {
 	for _, d := range all {
 		if d.InToc || d.IsInlined || d.IsOldVersion {
+			continue
+		}
+		if m.classifications[d.Key()].Mode == classifyInline {
 			continue
 		}
 		filename := kebabName(d.Name) + "-" + string(d.Version)
