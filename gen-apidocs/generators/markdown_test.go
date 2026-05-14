@@ -55,8 +55,7 @@ func TestAnchor(t *testing.T) {
 }
 
 func TestEscape(t *testing.T) {
-	// We only escape `<` — `>` and other characters pass through to match
-	// gen-resourcesdocs chapter.tmpl behaviour.
+	// We only escape `<`; `>` and other characters pass through unchanged.
 	if got := escape("a <b> c"); got != `a \<b> c` {
 		t.Errorf("escape: got %q", got)
 	}
@@ -241,6 +240,167 @@ func TestRecordLinkPrecedence(t *testing.T) {
 	m.recordLink("HPA", "autoscaling", "horizontalpodautoscaler-v1", api.ApiVersion("v1"))
 	if got := m.linkMap["HPA"].Version; string(got) != "v2" {
 		t.Errorf("after old version, HPA version = %q, want v2", got)
+	}
+}
+
+// TestClassifyDefinitions verifies the BFS home-finder on a synthetic
+// reference graph: types with a unique closest top-level inline there,
+// types with ties at the minimum distance stay standalone.
+func TestClassifyDefinitions(t *testing.T) {
+	mkDef := func(name string, inToc bool) *api.Definition {
+		return &api.Definition{
+			Name:    name,
+			Group:   api.ApiGroup("test"),
+			Version: api.ApiVersion("v1"),
+			Kind:    api.ApiKind(name),
+			InToc:   inToc,
+		}
+	}
+
+	// Reference graph (parent --refs--> child; AppearsIn is reverse).
+	//
+	//   Pod (InToc) --> PodSpec --> Container
+	//                          --> Volume --> AzureDiskVolumeSource
+	//                          <-- PodTemplateSpec (shared)
+	//   Deployment (InToc) --> DeploymentSpec --> PodTemplateSpec
+	//   PodTemplate (InToc) --> PodTemplateSpec
+	//   ObjectMeta -- referenced directly by Pod, Deployment, PodTemplate
+	pod := mkDef("Pod", true)
+	deployment := mkDef("Deployment", true)
+	podTemplate := mkDef("PodTemplate", true)
+	podSpec := mkDef("PodSpec", false)
+	deploymentSpec := mkDef("DeploymentSpec", false)
+	podTemplateSpec := mkDef("PodTemplateSpec", false)
+	container := mkDef("Container", false)
+	volume := mkDef("Volume", false)
+	azureDisk := mkDef("AzureDiskVolumeSource", false)
+	objectMeta := mkDef("ObjectMeta", false)
+
+	// Populate AppearsIn (= "who references me?").
+	podSpec.AppearsIn = api.SortDefinitionsByName{pod, podTemplateSpec}
+	deploymentSpec.AppearsIn = api.SortDefinitionsByName{deployment}
+	podTemplateSpec.AppearsIn = api.SortDefinitionsByName{podTemplate, deploymentSpec}
+	container.AppearsIn = api.SortDefinitionsByName{podSpec}
+	volume.AppearsIn = api.SortDefinitionsByName{podSpec}
+	azureDisk.AppearsIn = api.SortDefinitionsByName{volume}
+	objectMeta.AppearsIn = api.SortDefinitionsByName{pod, deployment, podTemplate}
+
+	all := map[string]*api.Definition{}
+	for _, d := range []*api.Definition{
+		pod, deployment, podTemplate,
+		podSpec, deploymentSpec, podTemplateSpec,
+		container, volume, azureDisk, objectMeta,
+	} {
+		all[d.Key()] = d
+	}
+
+	m := &MarkdownWriter{Config: &api.Config{
+		Definitions: api.Definitions{All: all},
+	}}
+	got := m.classifyDefinitions()
+
+	cases := []struct {
+		name       string
+		def        *api.Definition
+		wantMode   classifyMode
+		wantParent *api.Definition // only checked when wantMode == classifyInline
+	}{
+		// Container's only chain hits Pod at dist 2 (Container -> PodSpec -> Pod)
+		// while Deployment / PodTemplate sit at dist 5+. Pod wins uniquely.
+		{"Container inlines into Pod", container, classifyInline, pod},
+		// AzureDisk is one hop deeper than Container; same winner.
+		{"AzureDiskVolumeSource inlines into Pod", azureDisk, classifyInline, pod},
+		// Volume is shared via PodSpec only; same winner as Container.
+		{"Volume inlines into Pod", volume, classifyInline, pod},
+		// ObjectMeta is at distance 1 from three InToc resources → tie → standalone.
+		{"ObjectMeta is standalone", objectMeta, classifyStandalone, nil},
+		// Pod itself is InToc → not classified (own resource page).
+		{"Pod is skip", pod, classifySkip, nil},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cls := got[c.def.Key()]
+			if cls.Mode != c.wantMode {
+				t.Fatalf("Mode = %v, want %v", cls.Mode, c.wantMode)
+			}
+			if c.wantMode == classifyInline && cls.InlineInto != c.wantParent {
+				t.Fatalf("InlineInto = %v, want %v", cls.InlineInto, c.wantParent)
+			}
+		})
+	}
+}
+
+// TestLinkMapAliasesInlinedChildren verifies that a definition classified
+// as inline gets a linkMap entry that points at its parent resource page,
+// not at a standalone definitions/ file (which won't exist after Stage 2).
+func TestLinkMapAliasesInlinedChildren(t *testing.T) {
+	pod := &api.Definition{
+		Name: "Pod", Group: api.ApiGroup("core"), Version: api.ApiVersion("v1"),
+		Kind: api.ApiKind("Pod"), InToc: true,
+	}
+	container := &api.Definition{
+		Name: "Container", Group: api.ApiGroup("core"), Version: api.ApiVersion("v1"),
+		Kind: api.ApiKind("Container"),
+	}
+
+	m := &MarkdownWriter{
+		linkMap: map[string]linkInfo{},
+		classifications: map[string]defClassification{
+			container.Key(): {Mode: classifyInline, InlineInto: pod},
+		},
+		inlinedByParent: map[string][]*api.Definition{
+			pod.Key(): {container},
+		},
+	}
+
+	m.linkResources([]api.ResourceCategory{
+		{
+			Name:      "Workloads",
+			Resources: api.Resources{{Name: "Pod", Definition: pod}},
+		},
+	})
+
+	// Inlined child must alias to the parent's slug + filename.
+	got, ok := m.linkMap["Container"]
+	if !ok {
+		t.Fatal("linkMap missing entry for inlined Container")
+	}
+	if got.Category != "workloads" || got.Filename != "pod-v1" {
+		t.Errorf("Container linkInfo = {%q,%q}, want {workloads,pod-v1}", got.Category, got.Filename)
+	}
+}
+
+// TestLinkDefinitionsSkipsInlined verifies that an inlined type does not get
+// a stale definitions/ entry — only the parent-aliased entry from linkResources.
+func TestLinkDefinitionsSkipsInlined(t *testing.T) {
+	azureDisk := &api.Definition{
+		Name: "AzureDiskVolumeSource", Group: api.ApiGroup("core"),
+		Version: api.ApiVersion("v1"), Kind: api.ApiKind("AzureDiskVolumeSource"),
+	}
+	objectMeta := &api.Definition{
+		Name: "ObjectMeta", Group: api.ApiGroup("meta"),
+		Version: api.ApiVersion("v1"), Kind: api.ApiKind("ObjectMeta"),
+	}
+
+	m := &MarkdownWriter{
+		linkMap: map[string]linkInfo{},
+		classifications: map[string]defClassification{
+			azureDisk.Key():   {Mode: classifyInline}, // InlineInto irrelevant for this test
+			objectMeta.Key():  {Mode: classifyStandalone},
+		},
+	}
+
+	m.linkDefinitions(map[string]*api.Definition{
+		azureDisk.Key():  azureDisk,
+		objectMeta.Key(): objectMeta,
+	})
+
+	if _, exists := m.linkMap["AzureDiskVolumeSource"]; exists {
+		t.Error("inlined AzureDiskVolumeSource got a definitions/ entry; should have been skipped")
+	}
+	if got, ok := m.linkMap["ObjectMeta"]; !ok || got.Category != "definitions" {
+		t.Errorf("ObjectMeta should keep its standalone definitions/ entry; got = %+v ok=%v", got, ok)
 	}
 }
 

@@ -48,6 +48,9 @@ type MarkdownWriter struct {
 	// linkMap maps kind name → page path for cross-reference resolution.
 	linkMap map[string]linkInfo
 
+	classifications map[string]defClassification
+	inlinedByParent map[string][]*api.Definition
+
 	toc []*mdTOCItem
 
 	// finalized guards against Finalize being called twice by GenerateFiles.
@@ -131,6 +134,8 @@ type templateResponse struct {
 
 const hugoIndex = "_index.md"
 
+const apimachineryPrefix = "io.k8s.apimachinery."
+
 const (
 	titleOverview    = "Overview"
 	titleAPIGroups   = "API Groups"
@@ -138,6 +143,15 @@ const (
 	titleOperations  = "Operations"
 	titleOldVersions = "Old API Versions"
 )
+
+// utilityStandalone pins core/v1 utility kinds the BFS can't distinguish
+// from real sub-types.
+var utilityStandalone = map[string]bool{
+	"LocalObjectReference":      true,
+	"NodeSelector":              true,
+	"NodeSelectorTerm":          true,
+	"TypedLocalObjectReference": true,
+}
 
 var _ DocWriter = (*MarkdownWriter)(nil)
 
@@ -174,6 +188,8 @@ func NewMarkdownWriter(config *api.Config, copyright, title string) DocWriter {
 		OutputDir: outputDir,
 		linkMap:   make(map[string]linkInfo),
 	}
+	// Order matters: linkMap consults classifications to alias inlined types.
+	m.classifications = m.classifyDefinitions()
 	m.buildLinkMap(config)
 	return m
 }
@@ -251,8 +267,6 @@ func (m *MarkdownWriter) WriteResourceCategory(name, file string) error {
 
 	if body := readOptionalSection(file + ".md"); body != "" {
 		fmt.Fprintln(f, body)
-	} else {
-		fmt.Fprintf(f, "# %s\n", name)
 	}
 
 	m.currentCategory = mdCategory{name: name, slug: slug}
@@ -268,10 +282,7 @@ func (m *MarkdownWriter) WriteResourceCategory(name, file string) error {
 func (m *MarkdownWriter) WriteResource(r *api.Resource) error {
 	slug := m.currentCategory.slug
 	if r.Definition != nil && r.Definition.IsOldVersion {
-		slug = kebabCase(string(r.Definition.Group))
-		if err := os.MkdirAll(filepath.Join(m.OutputDir, slug), 0755); err != nil {
-			return fmt.Errorf("markdown: group dir %s: %w", slug, err)
-		}
+		return nil // markdown backend omits old-version pages; current version is canonical
 	}
 
 	filename := fmt.Sprintf("%s-%s.md", kebabName(r.Name), r.Definition.Version)
@@ -304,7 +315,7 @@ func (m *MarkdownWriter) WriteDefinitionsOverview() error {
 	}
 	defer f.Close()
 	weight := m.nextCategoryWeight()
-	writeSectionFrontmatter(f, titleDefinitions, "", weight)
+	writeSectionFrontmatter(f, titleDefinitions, "", weight, hideFromNav())
 
 	m.toc = append(m.toc, &mdTOCItem{
 		title:  titleDefinitions,
@@ -315,6 +326,9 @@ func (m *MarkdownWriter) WriteDefinitionsOverview() error {
 }
 
 func (m *MarkdownWriter) WriteDefinition(d *api.Definition) error {
+	if m.classifications[d.Key()].Mode == classifyInline {
+		return nil
+	}
 	filename := kebabName(d.Name) + "-" + string(d.Version)
 	if d.Group != "" && d.Group != "core" {
 		filename += "-" + string(d.Group)
@@ -474,6 +488,14 @@ func (m *MarkdownWriter) buildDefinitionPage(d *api.Definition, currentCategory 
 		}
 	}
 
+	if siblings := m.inlinedByParent[d.Key()]; len(siblings) > 0 {
+		sorted := append([]*api.Definition(nil), siblings...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+		for _, c := range sorted {
+			addSection(c)
+		}
+	}
+
 	visited := map[string]bool{d.Key(): true}
 	root := fieldSection{
 		Title:       d.Name,
@@ -583,6 +605,88 @@ func (m *MarkdownWriter) buildLinkMap(config *api.Config) {
 	m.linkDefinitions(config.Definitions.All)
 }
 
+type classifyMode int
+
+const (
+	classifySkip classifyMode = iota
+	classifyInline
+	classifyStandalone
+)
+
+type defClassification struct {
+	Mode       classifyMode
+	InlineInto *api.Definition // non-nil iff Mode == classifyInline
+}
+
+// classifyDefinitions returns each definition's emit mode.
+func (m *MarkdownWriter) classifyDefinitions() map[string]defClassification {
+	out := make(map[string]defClassification, len(m.Config.Definitions.All))
+	m.inlinedByParent = map[string][]*api.Definition{}
+	for _, d := range m.Config.Definitions.All {
+		if d.IsOldVersion || d.IsInlined || d.InToc {
+			out[d.Key()] = defClassification{Mode: classifySkip}
+			continue
+		}
+		if strings.HasPrefix(d.SwaggerKey, apimachineryPrefix) || utilityStandalone[d.Name] {
+			out[d.Key()] = defClassification{Mode: classifyStandalone}
+			continue
+		}
+		if home := m.closestTopLevelHome(d); home != nil {
+			out[d.Key()] = defClassification{Mode: classifyInline, InlineInto: home}
+			m.inlinedByParent[home.Key()] = append(m.inlinedByParent[home.Key()], d)
+			continue
+		}
+		out[d.Key()] = defClassification{Mode: classifyStandalone}
+	}
+	return out
+}
+
+// closestTopLevelHome returns the unique closest InToc ancestor of d via
+// AppearsIn, or nil on a tie or no reachable top-level.
+func (m *MarkdownWriter) closestTopLevelHome(d *api.Definition) *api.Definition {
+	type qItem struct {
+		def  *api.Definition
+		dist int
+	}
+	seen := map[string]bool{d.Key(): true}
+	queue := []qItem{{def: d, dist: 0}}
+
+	minDist := -1
+	winners := []*api.Definition{}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		if minDist >= 0 && cur.dist > minDist {
+			break
+		}
+
+		for _, parent := range cur.def.AppearsIn {
+			if parent == nil || seen[parent.Key()] {
+				continue
+			}
+			seen[parent.Key()] = true
+			nextDist := cur.dist + 1
+			if parent.InToc {
+				if minDist < 0 {
+					minDist = nextDist
+				}
+				if nextDist == minDist {
+					winners = append(winners, parent)
+				}
+				continue
+			}
+			queue = append(queue, qItem{def: parent, dist: nextDist})
+		}
+	}
+
+	if len(winners) == 1 {
+		return winners[0]
+	}
+	return nil
+}
+
 func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 	for _, c := range categories {
 		slug := kebabCase(c.Name)
@@ -592,6 +696,14 @@ func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 			}
 			filename := kebabName(r.Name) + "-" + string(r.Definition.Version)
 			m.recordLink(r.Definition.Name, slug, filename, r.Definition.Version)
+			// Types inlined into this page (pattern-matched and refcount-derived)
+			// share the parent's URL; the anchor on the parent is what selects them.
+			for _, child := range r.Definition.Inline {
+				m.recordLink(child.Name, slug, filename, child.Version)
+			}
+			for _, child := range m.inlinedByParent[r.Definition.Key()] {
+				m.recordLink(child.Name, slug, filename, child.Version)
+			}
 		}
 	}
 }
@@ -599,6 +711,9 @@ func (m *MarkdownWriter) linkResources(categories []api.ResourceCategory) {
 func (m *MarkdownWriter) linkDefinitions(all map[string]*api.Definition) {
 	for _, d := range all {
 		if d.InToc || d.IsInlined || d.IsOldVersion {
+			continue
+		}
+		if m.classifications[d.Key()].Mode == classifyInline {
 			continue
 		}
 		filename := kebabName(d.Name) + "-" + string(d.Version)
@@ -660,9 +775,22 @@ func readOptionalSection(name string) string {
 	return string(data)
 }
 
+type sectionFrontmatterOpt func(w io.Writer)
+
+// hideFromNav drops the section and its children from the Docsy sidebar.
+// Cross-ref-only sections (definitions) would otherwise add hundreds of
+// nav entries and slow every page render across k/website.
+func hideFromNav() sectionFrontmatterOpt {
+	return func(w io.Writer) {
+		fmt.Fprintln(w, "_build:")
+		fmt.Fprintln(w, "  list: never")
+		fmt.Fprintln(w, "toc_hide: true")
+	}
+}
+
 // writeSectionFrontmatter emits the minimal frontmatter for non-resource
 // pages. Resource pages go through resource.tmpl instead.
-func writeSectionFrontmatter(w io.Writer, title, description string, weight int) {
+func writeSectionFrontmatter(w io.Writer, title, description string, weight int, opts ...sectionFrontmatterOpt) {
 	fmt.Fprintln(w, "---")
 	fmt.Fprintln(w, `content_type: "api_reference"`)
 	if description != "" {
@@ -671,6 +799,9 @@ func writeSectionFrontmatter(w io.Writer, title, description string, weight int)
 	fmt.Fprintf(w, "title: %q\n", title)
 	fmt.Fprintf(w, "weight: %d\n", weight)
 	fmt.Fprintln(w, "auto_generated: true")
+	for _, o := range opts {
+		o(w)
+	}
 	fmt.Fprintln(w, "---")
 	fmt.Fprintln(w)
 }
